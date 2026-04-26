@@ -11,7 +11,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -63,7 +62,6 @@ func (s *CardanoProductionService) HashCertificate(certID, studentName, degree, 
 	return hex.EncodeToString(hash[:])
 }
 
-// SubmitTransaction builds and submits transaction using MeshJS approach
 func (s *CardanoProductionService) SubmitTransaction(
 	walletAddress string,
 	encryptedPrivKey string,
@@ -78,28 +76,28 @@ func (s *CardanoProductionService) SubmitTransaction(
 	log.Printf("Merkle Root: %s", merkleRoot)
 	log.Printf("Certificate Count: %d", certCount)
 
+	// Fix 1: Return error if tx-builder is not running
 	if !s.useRealBlockchain || s.blockfrostClient == nil {
-		log.Printf("⚠️  Real blockchain not enabled")
+		return "", fmt.Errorf("real blockchain not enabled: set USE_REAL_BLOCKCHAIN=true and provide BLOCKFROST_API_KEY")
 	}
 
-	// Decrypt private key
+	// Fix 2: Return error on decrypt failure
 	log.Printf("🔓 Decrypting private key...")
 	privateKeyHex, err := DecryptPrivateKey(encryptedPrivKey, password, salt)
 	if err != nil {
-		log.Printf("❌ Failed to decrypt private key: %v", err)
+		return "", fmt.Errorf("failed to decrypt private key: %w", err)
 	}
-
-	log.Printf("💼 Wallet Address: %s", walletAddress)
 	log.Printf("✅ Private key decrypted")
+	log.Printf("💼 Wallet Address: %s", walletAddress)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Get wallet info from Blockfrost
+	// Fix 3: Return error on balance fetch failure
 	log.Printf("💰 Checking wallet balance...")
 	addressInfo, err := s.getAddressInfo(ctx, walletAddress)
 	if err != nil {
-		log.Printf("❌ Failed to get address info: %v", err)
+		return "", fmt.Errorf("failed to get address info: %w", err)
 	}
 
 	var totalBalance int64
@@ -109,21 +107,23 @@ func (s *CardanoProductionService) SubmitTransaction(
 			break
 		}
 	}
-
 	log.Printf("💵 Balance: %d lovelace (%.2f ADA)", totalBalance, float64(totalBalance)/1000000)
 
+	// Fix 4: Return error on insufficient balance
 	minRequired := int64(2000000)
 	if totalBalance < minRequired {
-		log.Printf("❌ Insufficient balance")
+		return "", fmt.Errorf("insufficient balance: have %.2f ADA, need at least 2 ADA", float64(totalBalance)/1000000)
 	}
 
-	// Get UTXOs
+	// Fix 5: Return error on UTXO fetch failure
 	log.Printf("📦 Fetching UTXOs...")
 	utxos, err := s.getAddressUTXOs(ctx, walletAddress)
-	if err != nil || len(utxos) == 0 {
-		log.Printf("❌ No UTXOs available")
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch UTXOs: %w", err)
 	}
-
+	if len(utxos) == 0 {
+		return "", fmt.Errorf("no UTXOs available for address: %s", walletAddress)
+	}
 	log.Printf("✅ Found %d UTXOs", len(utxos))
 
 	// Select UTXO
@@ -136,7 +136,6 @@ func (s *CardanoProductionService) SubmitTransaction(
 				break
 			}
 		}
-
 		if amount >= minRequired {
 			selectedUTXO = &UTXO{
 				TxHash:      utxos[i].TxHash,
@@ -147,16 +146,15 @@ func (s *CardanoProductionService) SubmitTransaction(
 		}
 	}
 
+	// Fix 6: Return error if no suitable UTXO
 	if selectedUTXO == nil {
-		log.Printf("❌ No suitable UTXO found")
+		return "", fmt.Errorf("no UTXO with sufficient balance found (need > 2 ADA)")
 	}
-
 	log.Printf("✅ Selected UTXO: %s#%d (%d lovelace)",
 		selectedUTXO.TxHash[:10]+"...", selectedUTXO.OutputIndex, selectedUTXO.Amount)
 
-	// Build transaction using MeshJS approach
+	// Fix 7: Return error on transaction build failure
 	log.Printf("🔨 Building transaction with MeshJS approach...")
-
 	txCBOR, err := s.buildTransactionMesh(
 		walletAddress,
 		privateKeyHex,
@@ -165,19 +163,16 @@ func (s *CardanoProductionService) SubmitTransaction(
 		certCount,
 		selectedUTXO,
 	)
-
 	if err != nil {
-		log.Printf("❌ Failed to build transaction: %v", err)
+		return "", fmt.Errorf("failed to build transaction: %w", err)
 	}
-
 	log.Printf("✅ Transaction built and signed")
 
-	// Submit to Blockfrost
+	// Fix 8: Return error on submission failure
 	log.Printf("🚀 Submitting transaction to Cardano blockchain...")
-
 	txHash, err := s.submitTransaction(ctx, txCBOR)
 	if err != nil {
-		log.Printf("❌ Transaction submission failed: %v", err)
+		return "", fmt.Errorf("transaction submission failed: %w", err)
 	}
 
 	log.Printf("✅ Transaction submitted successfully!")
@@ -238,206 +233,6 @@ func (s *CardanoProductionService) buildTransactionMesh(
 
 	log.Printf("✅ MeshJS returned signed CBOR")
 	return result.TxCbor, nil
-}
-
-func (s *CardanoProductionService) buildWithMeshJS(
-	address string,
-	privateKeyHex string,
-	merkleRoot string,
-	universityName string,
-	certCount int,
-	utxo *UTXO,
-	fee int64,
-) (string, error) {
-
-	// ADD THESE DEBUG LOGS
-	log.Printf("🔍 DEBUG: buildWithMeshJS called")
-	log.Printf("🔍 Address: %s", address)
-	log.Printf("🔍 Merkle Root: %s", merkleRoot)
-	log.Printf("🔍 University: %s", universityName)
-	log.Printf("🔍 Cert Count: %d", certCount)
-	log.Printf("🔍 API Key: %s...", s.apiKey[:10])
-
-	reqBody := map[string]interface{}{
-		"network":          s.network,
-		"walletAddress":    address,
-		"privateKeyHex":    privateKeyHex,
-		"merkleRoot":       merkleRoot,
-		"universityName":   universityName,
-		"certCount":        certCount,
-		"blockfrostApiKey": s.apiKey,
-	}
-
-	reqJSON, err := json.Marshal(reqBody)
-	if err != nil {
-		log.Printf("❌ Failed to marshal JSON: %v", err)
-		return "", err
-	}
-
-	log.Printf("🔍 Request JSON length: %d bytes", len(reqJSON))
-	log.Printf("🔍 Request JSON: %s", string(reqJSON)[:200]+"...") // First 200 chars
-
-	meshURL := "http://localhost:3001/build-transaction"
-
-	log.Printf("🔨 Calling MeshJS at %s...", meshURL)
-
-	client := &http.Client{Timeout: 90 * time.Second}
-	resp, err := client.Post(meshURL, "application/json", bytes.NewReader(reqJSON))
-	if err != nil {
-		log.Printf("❌ HTTP POST failed: %v", err)
-		return "", fmt.Errorf("MeshJS unreachable: %v", err)
-	}
-	defer resp.Body.Close()
-
-	log.Printf("🔍 Response status: %d", resp.StatusCode)
-
-	body, _ := io.ReadAll(resp.Body)
-
-	log.Printf("🔍 Response body: %s", string(body))
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("MeshJS error: %s", string(body))
-	}
-
-	var result struct {
-		Success bool   `json:"success"`
-		TxCbor  string `json:"txCbor"`
-		Error   string `json:"error"`
-	}
-
-	json.Unmarshal(body, &result)
-
-	if !result.Success {
-		return "", fmt.Errorf("MeshJS failed: %s", result.Error)
-	}
-
-	log.Printf("✅ MeshJS returned signed CBOR")
-	return result.TxCbor, nil
-}
-
-func (s *CardanoProductionService) buildWithCLI(
-	address string,
-	privateKeyHex string,
-	utxo *UTXO,
-	change int64,
-	fee int64,
-	metadata map[string]interface{},
-) (string, error) {
-
-	tmpDir := os.TempDir()
-	timestamp := time.Now().UnixNano()
-	keyFile := fmt.Sprintf("%s/key_%d.skey", tmpDir, timestamp)
-	metadataFile := fmt.Sprintf("%s/metadata_%d.json", tmpDir, timestamp)
-	txRawFile := fmt.Sprintf("%s/tx_%d.raw", tmpDir, timestamp)
-	txSignedFile := fmt.Sprintf("%s/tx_%d.signed", tmpDir, timestamp)
-
-	defer os.Remove(keyFile)
-	defer os.Remove(metadataFile)
-	defer os.Remove(txRawFile)
-	defer os.Remove(txSignedFile)
-
-	// The key from wallet generation is 64 bytes (Ed25519 private key)
-	// But we need only the first 32 bytes (seed) for cardano-cli
-
-	privKeyBytes, err := hex.DecodeString(privateKeyHex)
-	if err != nil {
-		return "", fmt.Errorf("invalid private key hex: %v", err)
-	}
-
-	// Take only first 32 bytes (the seed)
-	var seedBytes []byte
-	if len(privKeyBytes) >= 32 {
-		seedBytes = privKeyBytes[:32]
-	} else {
-		return "", fmt.Errorf("private key too short: %d bytes", len(privKeyBytes))
-	}
-
-	seedHex := hex.EncodeToString(seedBytes)
-
-	// Use PaymentSigningKeyShelley_ed25519 (NOT Extended)
-	// This format expects just the 32-byte seed with 5820 prefix
-	keyJSON := fmt.Sprintf(`{
-  "type": "PaymentSigningKeyShelley_ed25519",
-  "description": "Payment Signing Key",
-  "cborHex": "5820%s"
-}`, seedHex)
-
-	if err := os.WriteFile(keyFile, []byte(keyJSON), 0600); err != nil {
-		return "", fmt.Errorf("failed to write key file: %v", err)
-	}
-
-	log.Printf("🔑 Created signing key file (32-byte seed)")
-
-	// Write metadata
-	metadataJSON, err := json.MarshalIndent(metadata, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(metadataFile, metadataJSON, 0600); err != nil {
-		return "", err
-	}
-
-	// Network magic
-	magic := "--testnet-magic 2"
-	if s.network == "preprod" {
-		magic = "--testnet-magic 1"
-	} else if s.network == "mainnet" {
-		magic = "--mainnet"
-	}
-
-	// Build transaction
-	buildCmd := fmt.Sprintf(`cardano-cli transaction build-raw \
-		--tx-in "%s#%d" \
-		--tx-out "%s+%d" \
-		--metadata-json-file "%s" \
-		--fee %d \
-		--out-file "%s"`,
-		utxo.TxHash, utxo.OutputIndex,
-		address, change,
-		metadataFile,
-		fee,
-		txRawFile,
-	)
-
-	log.Printf("🔨 Building raw transaction...")
-	output, err := exec.Command("bash", "-c", buildCmd).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("build failed: %v\nOutput: %s", err, string(output))
-	}
-	log.Printf("✅ Transaction body built")
-
-	// Sign transaction
-	signCmd := fmt.Sprintf(`cardano-cli transaction sign \
-		%s \
-		--tx-body-file "%s" \
-		--signing-key-file "%s" \
-		--out-file "%s"`,
-		magic,
-		txRawFile,
-		keyFile,
-		txSignedFile,
-	)
-
-	log.Printf("✍️  Signing transaction...")
-	output, err = exec.Command("bash", "-c", signCmd).CombinedOutput()
-	if err != nil {
-		// Print the actual key file content for debugging
-		keyContent, _ := os.ReadFile(keyFile)
-		log.Printf("❌ Key file content:\n%s", string(keyContent))
-		log.Printf("❌ Private key hex length: %d", len(privateKeyHex))
-		log.Printf("❌ Seed hex: %s", seedHex[:20]+"...")
-		return "", fmt.Errorf("sign failed: %v\nOutput: %s", err, string(output))
-	}
-	log.Printf("✅ Transaction signed successfully")
-
-	// Read signed transaction
-	txBytes, err := os.ReadFile(txSignedFile)
-	if err != nil {
-		return "", err
-	}
-
-	// Convert to hex
-	return hex.EncodeToString(txBytes), nil
 }
 
 // Blockfrost API calls
