@@ -1,0 +1,14 @@
+{
+  "name": "cert-system-server",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "dependencies": {
+    "@meshsdk/core": "^1.7.0",
+    "@meshsdk/core-csl": "^1.7.0",
+    "libsodium-wrappers-sumo": "^0.7.11",
+    "axios": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

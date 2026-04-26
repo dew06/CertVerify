@@ -1,0 +1,594 @@
+basePath: /api
+definitions:
+  handlers.BatchAnchorRequest:
+    properties:
+      max_certs:
+        description: Optional, default 1000
+        type: integer
+      password:
+        type: string
+      send_emails:
+        type: boolean
+      university_id:
+        type: string
+    required:
+    - password
+    - university_id
+    type: object
+  handlers.BatchAnchorResponse:
+    properties:
+      cardano_txid:
+        example: f75eac8ac7b3...
+        type: string
+      certificates:
+        example: 10
+        type: integer
+      cost:
+        example: 0.17 ADA (~$0.08)
+        type: string
+      cost_per_cert:
+        example: $0.008000
+        type: string
+      email_errors:
+        items:
+          type: string
+        type: array
+      email_warning:
+        example: 2 emails failed to send
+        type: string
+      emails_sent:
+        example: 10
+        type: integer
+      explorer_url:
+        example: https://preview.cardanoscan.io/transaction/...
+        type: string
+      merkle_root:
+        example: abc123def456...
+        type: string
+      message:
+        example: ✅ 10 certificates anchored and 10 emails sent!
+        type: string
+      network:
+        example: preview
+        type: string
+      success:
+        example: true
+        type: boolean
+      wallet:
+        example: addr_test1...
+        type: string
+    type: object
+  handlers.ChangePasswordRequest:
+    properties:
+      current_password:
+        type: string
+      new_password:
+        minLength: 8
+        type: string
+    required:
+    - current_password
+    - new_password
+    type: object
+  handlers.DomainVerificationResponse:
+    properties:
+      domain:
+        type: string
+      file_content:
+        additionalProperties: true
+        type: object
+      file_path:
+        type: string
+      instructions:
+        type: string
+      university_id:
+        type: string
+    type: object
+  handlers.ErrorResponse:
+    properties:
+      error:
+        type: string
+      success:
+        type: boolean
+    type: object
+  handlers.IssueCertificateRequest:
+    properties:
+      degree:
+        type: string
+      gpa:
+        type: number
+      password:
+        type: string
+      student_email:
+        type: string
+      student_name:
+        type: string
+      university_id:
+        type: string
+    required:
+    - degree
+    - password
+    - student_email
+    - student_name
+    - university_id
+    type: object
+  handlers.LoginRequest:
+    properties:
+      email:
+        type: string
+      password:
+        type: string
+    required:
+    - email
+    - password
+    type: object
+  handlers.LoginResponse:
+    properties:
+      message:
+        type: string
+      success:
+        type: boolean
+      token:
+        type: string
+      university:
+        $ref: '#/definitions/handlers.UniversityInfo'
+    type: object
+  handlers.RegisterRequest:
+    properties:
+      domain:
+        type: string
+      email:
+        type: string
+      name:
+        type: string
+      password:
+        minLength: 12
+        type: string
+    required:
+    - domain
+    - email
+    - name
+    - password
+    type: object
+  handlers.UniversityInfo:
+    properties:
+      cardano_address:
+        type: string
+      domain:
+        type: string
+      email:
+        type: string
+      id:
+        type: string
+      is_verified:
+        type: boolean
+      name:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: support@example.com
+    name: API Support
+  description: Blockchain-based certificate issuance and verification system
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: Certificate System API
+  version: "1.0"
+paths:
+  /auth/change-password:
+    post:
+      consumes:
+      - application/json
+      description: Change university password
+      parameters:
+      - description: Password change request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.ChangePasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Change password
+      tags:
+      - Auth
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Login with email and password
+      parameters:
+      - description: Login credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.LoginResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: University login
+      tags:
+      - Auth
+  /auth/logout:
+    post:
+      description: Logout user (client should remove token)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Logout
+      tags:
+      - Auth
+  /auth/me:
+    get:
+      description: Get currently logged-in university details
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get current user
+      tags:
+      - Auth
+  /auth/refresh:
+    post:
+      description: Get a new JWT token
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Refresh token
+      tags:
+      - Auth
+  /certificates/{certID}:
+    get:
+      description: Retrieve certificate information by ID
+      parameters:
+      - description: Certificate ID
+        in: path
+        name: certID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get certificate details
+      tags:
+      - certificates
+  /certificates/{certID}/download:
+    get:
+      description: Download the PDF certificate from IPFS
+      parameters:
+      - description: Certificate ID
+        in: path
+        name: certID
+        required: true
+        type: string
+      produces:
+      - application/pdf
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+      summary: Download certificate PDF
+      tags:
+      - certificates
+  /certificates/{id}/download:
+    get:
+      description: Download a single certificate PDF by ID
+      parameters:
+      - description: Certificate ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/pdf
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Download certificate PDF
+      tags:
+      - Certificates
+  /certificates/batch-anchor:
+    post:
+      consumes:
+      - application/json
+      description: Anchor multiple certificates to blockchain using Merkle tree and
+        optionally send emails to students
+      parameters:
+      - description: Batch anchor request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.BatchAnchorRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.BatchAnchorResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Anchor certificates to blockchain
+      tags:
+      - Certificates
+  /certificates/batch-csv:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload CSV file to issue multiple certificates at once
+      parameters:
+      - description: CSV file with student data
+        in: formData
+        name: csv_file
+        required: true
+        type: file
+      - description: University ID
+        in: formData
+        name: university_id
+        required: true
+        type: string
+      - description: University password
+        in: formData
+        name: password
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Bulk issue certificates from CSV
+      tags:
+      - certificates
+  /certificates/bulk-download:
+    get:
+      consumes:
+      - application/json
+      description: Download all certificates for a university as a ZIP file
+      parameters:
+      - description: University ID
+        in: query
+        name: university_id
+        required: true
+        type: string
+      - description: Password
+        in: query
+        name: password
+        required: true
+        type: string
+      produces:
+      - application/zip
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Bulk download certificates
+      tags:
+      - Certificates
+  /certificates/issue:
+    post:
+      consumes:
+      - application/json
+      description: Issue a certificate for a student with PDF and IPFS storage
+      parameters:
+      - description: Certificate details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.IssueCertificateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Issue a single certificate
+      tags:
+      - certificates
+  /university/{id}/domain-proof:
+    get:
+      description: Get the verification file content for domain proof
+      parameters:
+      - description: University ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.DomainVerificationResponse'
+      summary: Get domain verification proof
+      tags:
+      - university
+  /university/{id}/verify-domain:
+    post:
+      description: Verify that the university owns the domain by checking the verification
+        file
+      parameters:
+      - description: University ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Verify domain ownership
+      tags:
+      - university
+  /university/register:
+    post:
+      consumes:
+      - application/json
+      description: Register a university with domain and generate Cardano wallet
+      parameters:
+      - description: University registration details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Register a new university
+      tags:
+      - university
+  /verify/blockchain/{certID}:
+    get:
+      description: Get blockchain explorer links for a certificate
+      parameters:
+      - description: Certificate ID
+        in: path
+        name: certID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get blockchain information
+      tags:
+      - verification
+schemes:
+- http
+- https
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer" followed by a space and JWT token.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

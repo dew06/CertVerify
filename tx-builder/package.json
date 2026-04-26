@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "@emurgo/cardano-serialization-lib-nodejs": "^15.0.3",
+    "@meshsdk/core": "^1.9.0-beta.101",
+    "@meshsdk/core-csl": "^1.9.0-beta.101",
+    "express": "^5.2.1"
+  }
+}
