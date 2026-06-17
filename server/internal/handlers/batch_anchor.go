@@ -139,10 +139,15 @@ func (h *BatchAnchorHandler) AnchorBatch(c *gin.Context) {
 		proofJSON, _ := merkle.ProofToJSON(proof)
 
 		// Update certificate with proof
-		database.DB.Model(&cert).Updates(map[string]interface{}{
+		if result := database.DB.Model(&cert).Updates(map[string]interface{}{
 			"merkle_root_hash": merkleRoot,
 			"merkle_proof":     proofJSON,
-		})
+		}); result.Error != nil {
+			log.Printf("❌ Failed to update merkle proof for cert %s: %v", cert.CertID, result.Error)
+			// continue — don't abort the whole batch for one cert
+			continue
+		}
+
 	}
 
 	// Test password by trying to decrypt (this is the only verification needed)
@@ -185,13 +190,21 @@ func (h *BatchAnchorHandler) AnchorBatch(c *gin.Context) {
 	log.Printf("✅ Transaction submitted: %s", txID)
 
 	// Update all certificates with transaction ID
-	database.DB.Model(&models.Certificate{}).
+	if result := database.DB.Model(&models.Certificate{}).
 		Where("merkle_root_hash = ?", merkleRoot).
 		Updates(map[string]interface{}{
 			"cardano_tx_id":     txID,
 			"blockchain_status": "anchored",
 			"merkle_root":       merkleRoot,
+		}); result.Error != nil {
+		log.Printf("❌ CRITICAL: TX %s submitted but failed to update certificates: %v", txID, result.Error)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":        "Transaction submitted but DB update failed",
+			"cardano_txid": txID, // return the TX ID so it's not lost
+			"details":      "Please manually update blockchain_status for merkle_root: " + merkleRoot,
 		})
+		return
+	}
 
 	// Create batch anchor record
 	batchAnchor := models.BatchAnchor{
@@ -200,7 +213,10 @@ func (h *BatchAnchorHandler) AnchorBatch(c *gin.Context) {
 		CardanoTxID:      txID,
 		CertificateCount: len(certificates),
 	}
-	database.DB.Create(&batchAnchor)
+	if result := database.DB.Create(&batchAnchor); result.Error != nil {
+		log.Printf("❌ Failed to save batch anchor record: %v", result.Error)
+		// Non-fatal — TX already on chain, just log it
+	}
 
 	// Determine network for explorer URL
 	network := os.Getenv("CARDANO_NETWORK")

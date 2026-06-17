@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 
@@ -88,7 +89,11 @@ func (h *VerificationHandler) Verify(c *gin.Context) {
 
 	// Step 4: Get university
 	var university models.University
-	database.DB.Where("id = ?", certificate.UniversityID).First(&university)
+	if err := database.DB.Where("id = ?", certificate.UniversityID).First(&university).Error; err != nil {
+		log.Printf("❌ Failed to fetch university for cert %s: %v", certificate.CertID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch university details"})
+		return
+	}
 
 	// Success!
 	c.JSON(http.StatusOK, gin.H{
@@ -168,7 +173,7 @@ func (h *VerificationHandler) VerifyPDF(c *gin.Context) {
 	}
 
 	// 2. Extract Data using Regex (Matches your PDFGenerator template)
-	certID := extractField(content, `Certificate ID: (CERT-[\w-]+)`)
+	certID := extractField(content, `Verification ID:\s*([a-f0-9]+)`)
 	studentName := extractField(content, `CERTIFICATE OF ACHIEVEMENT\s+(.*)\s+has successfully`)
 
 	if certID == "" {
@@ -232,7 +237,11 @@ func (h *VerificationHandler) VerifyByID(c *gin.Context) {
 	}
 
 	var university models.University
-	database.DB.First(&university, certificate.UniversityID)
+	if err := database.DB.First(&university, certificate.UniversityID).Error; err != nil {
+		log.Printf("❌ University not found for cert %s: %v", certificate.CertID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "University not found"})
+		return
+	}
 
 	c.JSON(200, gin.H{
 		"valid":        true,

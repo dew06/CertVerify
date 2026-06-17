@@ -22,10 +22,15 @@ func Initialize() {
 	dbName := os.Getenv("DB_NAME")
 	dbPort := os.Getenv("DB_PORT")
 
+	sslMode := os.Getenv("DB_SSLMODE")
+	if sslMode == "" {
+		sslMode = "disable" // safe default for local dev
+	}
+
 	// Build connection string
 	dsn := fmt.Sprintf(
-		"host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
-		dbHost, dbUser, dbPassword, dbName, dbPort,
+		"host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+		dbHost, dbUser, dbPassword, dbName, dbPort, sslMode,
 	)
 
 	// Connect
@@ -43,6 +48,11 @@ func Initialize() {
 		&models.Certificate{},
 		&models.User{},
 		&models.BatchAnchor{},
+		&models.Company{},
+		&models.ProfileRequest{},
+		&models.Student{},
+		&models.StudentSkill{},
+		&models.StudentEducation{},
 	)
 	if err != nil {
 		log.Fatal("❌ Failed to create tables:", err)
