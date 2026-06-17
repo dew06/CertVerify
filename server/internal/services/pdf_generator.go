@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"os"
 	"time"
 
 	"github.com/jung-kurt/gofpdf"
@@ -175,8 +176,11 @@ func (p *PDFGeneratorService) drawFooter(pdf *gofpdf.Fpdf, certID string, height
 }
 
 func (p *PDFGeneratorService) generateQRCode(certID string) ([]byte, error) {
-	// Update with your specific redirect URL
-	verifyURL := fmt.Sprintf("http://localhost:5173/verify/%s", certID)
+	baseURL := os.Getenv("VERIFICATION_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:5173"
+	}
+	verifyURL := fmt.Sprintf("%s/verify/%s", baseURL, certID)
 	qr, err := qrcode.New(verifyURL, qrcode.Medium)
 	if err != nil {
 		return nil, err

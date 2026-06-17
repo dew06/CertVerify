@@ -1,35 +1,30 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"time"
 
 	"cert-system/server/internal/database"
+	"cert-system/server/internal/middleware"
 	"cert-system/server/internal/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
-// GetMyProfileRequests gets all requests for student's profile
-// @Summary Get profile requests
-// @Description Get all company requests to view your profile (student endpoint)
-// @Tags Student
-// @Accept json
-// @Produce json
-// @Param email query string true "Student email"
-// @Success 200 {object} map[string]interface{}
-// @Router /student/profile-requests [get]
+// GET /api/student/profile-requests
 func GetMyProfileRequests(c *gin.Context) {
-	email := c.Query("email")
-	if email == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Email required"})
+	studentID, email, _, exists := middleware.GetStudentFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
 		return
 	}
+	_ = studentID
 
-	// Get all requests for this student
 	var requests []models.ProfileRequest
 	if err := database.DB.
 		Preload("Company").
@@ -40,37 +35,38 @@ func GetMyProfileRequests(c *gin.Context) {
 		return
 	}
 
-	// Format response with company details
+	// Nested company object — matches frontend: req.company?.name, req.company?.website
 	type RequestWithCompany struct {
-		ID              uuid.UUID `json:"id"`
-		CompanyName     string    `json:"company_name"`
-		CompanyIndustry string    `json:"company_industry"`
-		CompanyLocation string    `json:"company_location"`
-		CompanyWebsite  string    `json:"company_website"`
-		Message         string    `json:"message"`
-		Status          string    `json:"status"`
-		RequestedAt     time.Time `json:"requested_at"`
-		ExpiresAt       time.Time `json:"expires_at"`
-		IsExpired       bool      `json:"is_expired"`
+		ID          uuid.UUID  `json:"id"`
+		Status      string     `json:"status"`
+		Message     string     `json:"message"`
+		RequestedAt time.Time  `json:"requested_at"`
+		ExpiresAt   time.Time  `json:"expires_at"`
+		RespondedAt *time.Time `json:"responded_at,omitempty"`
+		IsExpired   bool       `json:"is_expired"`
+		Company     gin.H      `json:"company"`
 	}
 
-	var result []RequestWithCompany
+	result := make([]RequestWithCompany, 0, len(requests))
 	for _, req := range requests {
 		result = append(result, RequestWithCompany{
-			ID:              req.ID,
-			CompanyName:     req.Company.Name,
-			CompanyIndustry: req.Company.Industry,
-			CompanyLocation: req.Company.Location,
-			CompanyWebsite:  req.Company.Website,
-			Message:         req.Message,
-			Status:          req.Status,
-			RequestedAt:     req.RequestedAt,
-			ExpiresAt:       req.ExpiresAt,
-			IsExpired:       time.Now().After(req.ExpiresAt) && req.Status == "pending",
+			ID:          req.ID,
+			Status:      req.Status,
+			Message:     req.Message,
+			RequestedAt: req.RequestedAt,
+			ExpiresAt:   req.ExpiresAt,
+			RespondedAt: req.RespondedAt,
+			IsExpired:   time.Now().After(req.ExpiresAt) && req.Status == "pending",
+			Company: gin.H{
+				"id":       req.Company.ID,
+				"name":     req.Company.Name,
+				"industry": req.Company.Industry,
+				"location": req.Company.Location,
+				"website":  req.Company.Website,
+			},
 		})
 	}
 
-	// Count by status
 	var pending, accepted, rejected int64
 	database.DB.Model(&models.ProfileRequest{}).Where("student_email = ? AND status = ?", email, "pending").Count(&pending)
 	database.DB.Model(&models.ProfileRequest{}).Where("student_email = ? AND status = ?", email, "accepted").Count(&accepted)
@@ -80,56 +76,60 @@ func GetMyProfileRequests(c *gin.Context) {
 		"success":  true,
 		"requests": result,
 		"total":    len(result),
-		"counts": gin.H{
-			"pending":  pending,
-			"accepted": accepted,
-			"rejected": rejected,
-		},
+		"counts":   gin.H{"pending": pending, "accepted": accepted, "rejected": rejected},
 	})
 }
 
-// RespondToRequest allows student to accept/reject profile request
-// @Summary Respond to profile request
-// @Description Accept or reject a company's request to view your profile
-// @Tags Student
-// @Accept json
-// @Produce json
-// @Param body body map[string]string true "Response data"
-// @Success 200 {object} map[string]interface{}
-// @Router /student/respond-request [post]
+// POST /api/student/profile-requests/:id/respond
+// Frontend calls: api.respondToRequest(id, { action: "accept" | "reject" })
+// ID comes from the URL param :id — NOT from the request body
 func RespondToRequest(c *gin.Context) {
-	var req struct {
-		RequestID string `json:"request_id" binding:"required"`
-		Email     string `json:"email" binding:"required,email"`
-		Action    string `json:"action" binding:"required"` // accept or reject
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	_, email, _, exists := middleware.GetStudentFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
 		return
 	}
 
-	// Validate action
-	if req.Action != "accept" && req.Action != "reject" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Action must be 'accept' or 'reject'"})
-		return
-	}
-
-	requestID, err := uuid.Parse(req.RequestID)
+	// Read request ID from URL param :id
+	requestID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request ID"})
 		return
 	}
 
-	// Get request
-	var profileReq models.ProfileRequest
-	if err := database.DB.Where("id = ? AND student_email = ?", requestID, req.Email).
-		First(&profileReq).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Request not found"})
+	// Accept both { action: "accept"/"reject" } and { status: "accepted"/"rejected" }
+	var body struct {
+		Action string `json:"action"`
+		Status string `json:"status"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Check if already responded
+	// Normalise to a single action string
+	action := body.Action
+	if action == "" {
+		action = body.Status
+	}
+	if action != "accept" && action != "reject" &&
+		action != "accepted" && action != "rejected" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Action must be 'accept' or 'reject'"})
+		return
+	}
+
+	var profileReq models.ProfileRequest
+	if err := database.DB.
+		Where("id = ? AND student_email = ?", requestID, email).
+		First(&profileReq).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Request not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		}
+		return
+	}
+
 	if profileReq.Status != "pending" {
 		c.JSON(http.StatusConflict, gin.H{
 			"error":  "Request already responded to",
@@ -137,19 +137,15 @@ func RespondToRequest(c *gin.Context) {
 		})
 		return
 	}
-
-	// Check if expired
 	if time.Now().After(profileReq.ExpiresAt) {
-		database.DB.Model(&profileReq).Updates(map[string]interface{}{
-			"status": "expired",
-		})
+		database.DB.Model(&profileReq).Update("status", "expired")
 		c.JSON(http.StatusGone, gin.H{"error": "Request has expired"})
 		return
 	}
 
-	// Update request
+	// Normalise to stored form: "accepted" / "rejected"
 	status := "rejected"
-	if req.Action == "accept" {
+	if action == "accept" || action == "accepted" {
 		status = "accepted"
 	}
 
@@ -158,13 +154,11 @@ func RespondToRequest(c *gin.Context) {
 		"status":       status,
 		"responded_at": now,
 	}).Error; err != nil {
-		log.Printf("Error updating request: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update request"})
 		return
 	}
 
-	log.Printf("✅ Student %s %s profile request from company", req.Email, status)
-
+	log.Printf("✅ Student %s %s profile request %s", email, status, requestID)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": fmt.Sprintf("Request %s successfully", status),
@@ -172,75 +166,26 @@ func RespondToRequest(c *gin.Context) {
 	})
 }
 
-// UpdateProfileVisibility allows student to hide/show profile in searches
-// @Summary Update profile visibility
-// @Description Toggle whether your profile appears in company searches
-// @Tags Student
-// @Accept json
-// @Produce json
-// @Param body body map[string]interface{} true "Visibility data"
-// @Success 200 {object} map[string]interface{}
-// @Router /student/profile-visibility [post]
-func UpdateProfileVisibility(c *gin.Context) {
-	var req struct {
-		Email        string `json:"email" binding:"required,email"`
-		IsSearchable bool   `json:"is_searchable"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Update all certificates for this student
-	result := database.DB.Model(&models.Certificate{}).
-		Where("student_email = ?", req.Email).
-		Update("is_searchable", req.IsSearchable)
-
-	if result.Error != nil {
-		log.Printf("Error updating visibility: %v", result.Error)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update visibility"})
-		return
-	}
-
-	log.Printf("✅ Student %s set profile visibility to: %v", req.Email, req.IsSearchable)
-
-	c.JSON(http.StatusOK, gin.H{
-		"success":       true,
-		"message":       "Profile visibility updated",
-		"is_searchable": req.IsSearchable,
-		"updated_count": result.RowsAffected,
-	})
-}
-
-// GetMyProfileSettings gets student's current profile settings
-// @Summary Get profile settings
-// @Description Get your current profile visibility and information
-// @Tags Student
-// @Accept json
-// @Produce json
-// @Param email query string true "Student email"
-// @Success 200 {object} map[string]interface{}
-// @Router /student/profile-settings [get]
+// GET /api/student/profile-settings
 func GetMyProfileSettings(c *gin.Context) {
-	email := c.Query("email")
-	if email == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Email required"})
+	_, email, _, exists := middleware.GetStudentFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
 		return
 	}
 
-	// Get one certificate to check settings (all should have same is_searchable)
-	var cert models.Certificate
-	if err := database.DB.Where("student_email = ?", email).First(&cert).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "No certificates found"})
+	var student models.Student
+	if err := database.DB.Where("email = ? AND deleted_at IS NULL", email).First(&student).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Student not found"})
 		return
 	}
 
-	// Count certificates
+	// Only count certificates the student has actually uploaded (pdf_path != '')
 	var totalCerts int64
-	database.DB.Model(&models.Certificate{}).Where("student_email = ?", email).Count(&totalCerts)
+	database.DB.Model(&models.Certificate{}).
+		Where("student_email = ? AND pdf_path != ''", email).
+		Count(&totalCerts)
 
-	// Count pending requests
 	var pendingRequests int64
 	database.DB.Model(&models.ProfileRequest{}).
 		Where("student_email = ? AND status = ?", email, "pending").
@@ -249,13 +194,82 @@ func GetMyProfileSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"profile": gin.H{
-			"email":              cert.StudentEmail,
-			"name":               cert.StudentName,
-			"is_searchable":      cert.IsSearchable,
+			"email":              student.Email,
+			"name":               student.Name,
+			"is_searchable":      student.IsSearchable,
+			"show_name":          student.ShowName,
+			"show_email":         student.ShowEmail,
+			"show_phone":         student.ShowPhone,
+			"show_age":           student.ShowAge,
+			"show_gender":        student.ShowGender,
+			"show_nationality":   student.ShowNationality,
+			"show_linkedin":      student.ShowLinkedIn,
 			"total_certificates": totalCerts,
 		},
-		"requests": gin.H{
-			"pending": pendingRequests,
-		},
+		"requests": gin.H{"pending": pendingRequests},
 	})
+}
+
+// POST /api/student/privacy-settings
+func UpdatePrivacySettings(c *gin.Context) {
+	_, email, _, exists := middleware.GetStudentFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		return
+	}
+
+	var req struct {
+		IsSearchable    *bool `json:"is_searchable"`
+		ShowName        *bool `json:"show_name"`
+		ShowEmail       *bool `json:"show_email"`
+		ShowPhone       *bool `json:"show_phone"`
+		ShowAge         *bool `json:"show_age"`
+		ShowGender      *bool `json:"show_gender"`
+		ShowNationality *bool `json:"show_nationality"`
+		ShowLinkedIn    *bool `json:"show_linkedin"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updates := map[string]interface{}{}
+	if req.IsSearchable != nil {
+		updates["is_searchable"] = *req.IsSearchable
+	}
+	if req.ShowName != nil {
+		updates["show_name"] = *req.ShowName
+	}
+	if req.ShowEmail != nil {
+		updates["show_email"] = *req.ShowEmail
+	}
+	if req.ShowPhone != nil {
+		updates["show_phone"] = *req.ShowPhone
+	}
+	if req.ShowAge != nil {
+		updates["show_age"] = *req.ShowAge
+	}
+	if req.ShowGender != nil {
+		updates["show_gender"] = *req.ShowGender
+	}
+	if req.ShowNationality != nil {
+		updates["show_nationality"] = *req.ShowNationality
+	}
+	if req.ShowLinkedIn != nil {
+		updates["show_linkedin"] = *req.ShowLinkedIn
+	}
+
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No fields to update"})
+		return
+	}
+
+	if err := database.DB.Model(&models.Student{}).
+		Where("email = ? AND deleted_at IS NULL", email).
+		Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update privacy settings"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Privacy settings updated"})
 }

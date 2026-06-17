@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -373,7 +374,11 @@ func (h *CertificateHandler) Issue(c *gin.Context) {
 		StudentEmail:    req.StudentEmail,
 	}
 
-	database.DB.Create(&certificate)
+	if result := database.DB.Create(&certificate); result.Error != nil {
+		log.Printf("❌ Failed to save certificate: %v", result.Error)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save certificate"})
+		return
+	}
 
 	// 7. Return response
 	c.JSON(http.StatusCreated, gin.H{

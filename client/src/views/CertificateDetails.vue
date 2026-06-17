@@ -69,7 +69,7 @@
                 <p class="text-gray-500 mb-1">Transaction ID</p>
                 <p class="truncate text-blue-300">{{ certificate.cardano_txid }}</p>
               </div>
-              <a :href="'https://preview.cardanoscan.io/transaction/' + certificate.cardano_txid" 
+              <a ::href="`https://${blockchainNetwork}.cardanoscan.io/transaction/${certificate.cardano_txid}`" 
                  target="_blank" 
                  class="block text-center py-2 bg-blue-600 rounded hover:bg-blue-500 transition font-sans text-sm">
                 Explore Transaction
@@ -94,40 +94,48 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
-import { useRoute } from 'vue-router';
-import apiService from '../services/api';
+import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
+import apiService from '../services/api'
 
-const route = useRoute();
-const certificate = ref(null);
-const loading = ref(true);
-const error = ref(null);
+const route = useRoute()
+const certificate = ref(null)
+const loading = ref(true)
+const error = ref(null)
+
+const blockchainNetwork = import.meta.env.VITE_CARDANO_NETWORK || 'preview'
 
 const formatDate = (dateStr) => {
   return new Date(dateStr).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  });
-};
+    year: 'numeric', month: 'long', day: 'numeric'
+  })
+}
 
 const downloadPDF = async () => {
   try {
-    await apiService.downloadCertificate(certificate.value.cert_id, certificate.value.student_name);
+    const res = await apiService.downloadCertificate(certificate.value.cert_id)
+    const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${certificate.value.student_name}-${certificate.value.cert_id.substring(0, 8)}.pdf`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.URL.revokeObjectURL(url)
   } catch (err) {
-    alert("Download failed. The IPFS gateway might be busy.");
+    alert('Download failed. The IPFS gateway might be busy.')
   }
-};
+}
 
 onMounted(async () => {
-  const certID = route.params.certID;
+  const certID = route.params.certID
   try {
-    const res = await apiService.getCertificate(certID);
-    certificate.value = res.data;
+    const res = await apiService.getCertificate(certID)
+    certificate.value = res.data
   } catch (err) {
-    error.value = "Certificate not found or invalid ID.";
+    error.value = 'Certificate not found or invalid ID.'
   } finally {
-    loading.value = false;
+    loading.value = false
   }
-});
+})
 </script>

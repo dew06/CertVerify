@@ -51,7 +51,7 @@ func (s *EmailService) SendCertificateEmail(
 	pdfPath string,
 ) error {
 
-	log.Printf("📧 Sending certificate to: %s (%s)", studentName, toEmail)
+	log.Printf("Sending certificate to: %s (%s)", studentName, toEmail)
 
 	// Create email body
 	htmlBody, err := s.generateCertificateHTML(data)
@@ -78,7 +78,7 @@ func (s *EmailService) SendCertificateEmail(
 		return fmt.Errorf("failed to send email: %v", err)
 	}
 
-	log.Printf("✅ Certificate sent to: %s", toEmail)
+	log.Printf(" Certificate sent to: %s", toEmail)
 	return nil
 }
 
@@ -156,7 +156,7 @@ func (s *EmailService) generateCertificateHTML(data CertificateEmailData) (strin
 </head>
 <body>
     <div class="header">
-        <h1>🎓 Congratulations, {{.StudentName}}!</h1>
+        <h1> Congratulations, {{.StudentName}}!</h1>
         <p>Your certificate has been issued and secured on the blockchain</p>
     </div>
     
@@ -166,35 +166,35 @@ func (s *EmailService) generateCertificateHTML(data CertificateEmailData) (strin
         <p>We are pleased to inform you that your certificate has been successfully issued by <strong>{{.UniversityName}}</strong> and secured on the Cardano blockchain.</p>
         
         <div class="cert-info">
-            <h3>📜 Certificate Details</h3>
+            <h3> Certificate Details</h3>
             <p><strong>Course:</strong> {{.CourseName}}</p>
             <p><strong>Issue Date:</strong> {{.IssueDate}}</p>
             <p><strong>Certificate ID:</strong> {{.CertificateID}}</p>
-            <div class="blockchain-badge">⛓️ Blockchain Verified</div>
+            <div class="blockchain-badge"> Blockchain Verified</div>
         </div>
         
         <div class="cert-info">
-            <h3>🔗 Blockchain Verification</h3>
+            <h3> Blockchain Verification</h3>
             <p>Your certificate has been permanently recorded on the Cardano blockchain:</p>
             <p><strong>Transaction ID:</strong><br>
             <code style="background: #f3f4f6; padding: 4px 8px; border-radius: 4px; font-size: 12px;">{{.TransactionID}}</code></p>
         </div>
         
         <div style="text-align: center; margin: 30px 0;">
-            <a href="{{.VerifyURL}}" class="button">🔍 Verify Certificate</a>
-            <a href="{{.TransactionURL}}" class="button" style="background: #7c3aed;">⛓️ View on Blockchain</a>
+            <a href="{{.VerifyURL}}" class="button"> Verify Certificate</a>
+            <a href="{{.TransactionURL}}" class="button" style="background: #7c3aed;"> View on Blockchain</a>
         </div>
         
-        <p><strong>📎 Your certificate PDF is attached to this email.</strong></p>
+        <p><strong> Your certificate PDF is attached to this email.</strong></p>
         
         <p>You can verify the authenticity of your certificate at any time using the verification link above or by visiting our verification portal and entering your certificate ID.</p>
         
         <p>The blockchain ensures that your certificate is:</p>
         <ul>
-            <li>✅ Tamper-proof and immutable</li>
-            <li>✅ Independently verifiable</li>
-            <li>✅ Permanently stored</li>
-            <li>✅ Globally accessible</li>
+            <li> Tamper-proof and immutable</li>
+            <li> Independently verifiable</li>
+            <li> Permanently stored</li>
+            <li> Globally accessible</li>
         </ul>
     </div>
     
@@ -327,10 +327,10 @@ func (s *EmailService) SendBulkCertificates(
 	successCount := 0
 	var errors []error
 
-	log.Printf("📧 Starting bulk email send for %d certificates...", len(certificates))
+	log.Printf(" Starting bulk email send for %d certificates...", len(certificates))
 
 	for i, cert := range certificates {
-		log.Printf("📨 Sending %d/%d...", i+1, len(certificates))
+		log.Printf(" Sending %d/%d...", i+1, len(certificates))
 
 		err := s.SendCertificateEmail(
 			cert.Email,
@@ -340,14 +340,14 @@ func (s *EmailService) SendBulkCertificates(
 		)
 
 		if err != nil {
-			log.Printf("❌ Failed to send to %s: %v", cert.Email, err)
+			log.Printf(" Failed to send to %s: %v", cert.Email, err)
 			errors = append(errors, fmt.Errorf("%s: %v", cert.Email, err))
 		} else {
 			successCount++
 		}
 	}
 
-	log.Printf("✅ Bulk send complete: %d/%d successful", successCount, len(certificates))
+	log.Printf(" Bulk send complete: %d/%d successful", successCount, len(certificates))
 
 	return successCount, errors
 }

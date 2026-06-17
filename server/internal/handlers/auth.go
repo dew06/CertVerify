@@ -3,6 +3,7 @@ package handlers
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"cert-system/server/internal/database"
 	"cert-system/server/internal/middleware"
@@ -13,49 +14,18 @@ import (
 	"gorm.io/gorm"
 )
 
-// LoginRequest represents login credentials
+// =============================================================================
+// SHARED TYPES
+// =============================================================================
+
 type LoginRequest struct {
-	Email    string `json:"email" binding:"required,email"`
+	Email    string `json:"email"    binding:"required,email"`
 	Password string `json:"password" binding:"required"`
-}
-
-// LoginResponse represents login response
-type LoginResponse struct {
-	Success    bool           `json:"success"`
-	Message    string         `json:"message"`
-	Token      string         `json:"token"`
-	University universityInfo `json:"university"`
-}
-
-type CompanyLoginResponse struct {
-	Success bool        `json:"success"`
-	Message string      `json:"message"`
-	Token   string      `json:"token"`
-	Company companyInfo `json:"company"`
-}
-
-// UniversityInfo represents university data
-type universityInfo struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Email          string `json:"email"`
-	Domain         string `json:"domain"`
-	CardanoAddress string `json:"cardano_address"`
-	IsVerified     bool   `json:"is_verified"`
-}
-
-type companyInfo struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Email      string `json:"email"`
-	Industry   string `json:"industry"`
-	Location   string `json:"location"`
-	IsVerified bool   `json:"is_verified"`
 }
 
 type ChangePasswordRequest struct {
 	CurrentPassword string `json:"current_password" binding:"required"`
-	NewPassword     string `json:"new_password" binding:"required,min=8"`
+	NewPassword     string `json:"new_password"     binding:"required,min=8"`
 }
 
 type ErrorResponse struct {
@@ -63,18 +33,11 @@ type ErrorResponse struct {
 	Error   string `json:"error"`
 }
 
-// LoginHandler handles university login
-// @Summary University login
-// @Description Login with email and password
-// @Tags Auth
-// @Accept json
-// @Produce json
-// @Param body body LoginRequest true "Login credentials"
-// @Success 200 {object} LoginResponse
-// @Failure 400 {object} ErrorResponse
-// @Failure 401 {object} ErrorResponse
-// @Router /auth/login [post]
-func LoginHandler(db *gorm.DB) gin.HandlerFunc {
+// =============================================================================
+// UNIFIED LOGIN
+// =============================================================================
+
+func UnifiedLoginHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req LoginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -86,72 +49,119 @@ func LoginHandler(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		log.Printf("🔐 University login attempt: %s", req.Email)
+		log.Printf("🔐 Login attempt: %s", req.Email)
 
-		// Find university by email
+		// ── 1. Try university ─────────────────────────────────────────────
 		var university models.University
-		if err := db.Where("email = ?", req.Email).First(&university).Error; err != nil {
-			log.Printf("❌ University not found: %s", req.Email)
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"error":   "Invalid email or password",
+		if err := db.Where("email = ?", req.Email).First(&university).Error; err == nil {
+			if !university.CheckPassword(req.Password) {
+				c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid email or password"})
+				return
+			}
+
+			token, err := middleware.GenerateToken(university.ID.String(), university.Email, university.Name, university.TokenVersion)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+				return
+			}
+
+			log.Printf("✅ University login: %s", university.Name)
+			c.JSON(http.StatusOK, gin.H{
+				"success":  true,
+				"message":  "Login successful",
+				"role":     "university",
+				"token":    token,
+				"redirect": "/dashboard/university",
+				"user": gin.H{
+					"id":          university.ID,
+					"name":        university.Name,
+					"email":       university.Email,
+					"domain":      university.Domain,
+					"is_verified": university.IsVerified,
+				},
 			})
 			return
 		}
 
-		// Verify password
-		if !university.CheckPassword(req.Password) {
-			log.Printf("❌ Invalid password for: %s", req.Email)
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"error":   "Invalid email or password",
+		// ── 2. Try company ────────────────────────────────────────────────
+		var company models.Company
+		if err := db.Where("email = ?", req.Email).First(&company).Error; err == nil {
+			if !company.CheckPassword(req.Password) {
+				c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid email or password"})
+				return
+			}
+
+			token, err := middleware.GenerateCompanyToken(company.ID.String(), company.Email, company.Name, company.TokenVersion)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+				return
+			}
+
+			log.Printf("✅ Company login: %s", company.Name)
+			c.JSON(http.StatusOK, gin.H{
+				"success":  true,
+				"message":  "Login successful",
+				"role":     "company",
+				"token":    token,
+				"redirect": "/dashboard/company",
+				"user": gin.H{
+					"id":          company.ID,
+					"name":        company.Name,
+					"email":       company.Email,
+					"industry":    company.Industry,
+					"is_verified": company.IsVerified,
+				},
 			})
 			return
 		}
 
-		log.Printf("✅ University login successful: %s", university.Name)
+		// ── 3. Try student ────────────────────────────────────────────────
+		var student models.Student
+		if err := db.Where("email = ? AND deleted_at IS NULL", req.Email).First(&student).Error; err == nil {
+			if !student.CheckPassword(req.Password) {
+				c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid email or password"})
+				return
+			}
 
-		// Generate JWT token
-		token, err := middleware.GenerateToken(
-			university.ID.String(),
-			university.Email,
-			university.Name,
-		)
-		if err != nil {
-			log.Printf("❌ Token generation failed: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"success": false,
-				"error":   "Failed to generate token",
+			now := time.Now()
+			student.LastLogin = &now
+			if err := db.Save(&student).Error; err != nil {
+				log.Printf("Warning: failed to update last_login for %s: %v", student.Email, err)
+			}
+
+			token, err := middleware.GenerateStudentToken(student.ID.String(), student.Email, student.Name, student.TokenVersion)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+				return
+			}
+
+			log.Printf("✅ Student login: %s", student.Name)
+			c.JSON(http.StatusOK, gin.H{
+				"success":  true,
+				"message":  "Login successful",
+				"role":     "student",
+				"token":    token,
+				"redirect": "/dashboard/student",
+				"user": gin.H{
+					"id":            student.ID,
+					"name":          student.Name,
+					"email":         student.Email,
+					"is_searchable": student.IsSearchable,
+				},
 			})
 			return
 		}
 
-		// Response
-		c.JSON(http.StatusOK, LoginResponse{
-			Success: true,
-			Message: "Login successful",
-			Token:   token,
-			University: universityInfo{
-				ID:             university.ID.String(),
-				Name:           university.Name,
-				Email:          university.Email,
-				Domain:         university.Domain,
-				CardanoAddress: university.CardanoPublicKey,
-				IsVerified:     university.IsVerified,
-			},
-		})
+		// ── 4. Not found in any table ─────────────────────────────────────
+		log.Printf("❌ Login failed — email not found: %s", req.Email)
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid email or password"})
 	}
 }
 
-// GetCurrentUserHandler returns current logged-in user info
-// @Summary Get current user
-// @Description Get currently logged-in university details
-// @Tags Auth
-// @Produce json
-// @Security BearerAuth
-// @Success 200 {object} map[string]interface{}
-// @Failure 401 {object} ErrorResponse
-// @Router /auth/me [get]
+// =============================================================================
+// UNIVERSITY AUTH
+// =============================================================================
+
 func GetCurrentUserHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		universityID, email, name, exists := middleware.GetUserFromContext(c)
@@ -160,18 +170,13 @@ func GetCurrentUserHandler(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Get full university details from database
 		var university models.University
 		if err := db.Where("id = ?", universityID).First(&university).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "University not found"})
 			return
 		}
 
-		// Get certificate statistics
-		var totalCerts int64
-		var anchoredCerts int64
-		var pendingCerts int64
-
+		var totalCerts, anchoredCerts, pendingCerts int64
 		db.Model(&models.Certificate{}).Where("university_id = ?", universityID).Count(&totalCerts)
 		db.Model(&models.Certificate{}).Where("university_id = ? AND cardano_tx_id != ?", universityID, "").Count(&anchoredCerts)
 		db.Model(&models.Certificate{}).Where("university_id = ? AND cardano_tx_id = ?", universityID, "").Count(&pendingCerts)
@@ -195,15 +200,6 @@ func GetCurrentUserHandler(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-// RefreshTokenHandler refreshes the JWT token
-// @Summary Refresh token
-// @Description Get a new JWT token
-// @Tags Auth
-// @Produce json
-// @Security BearerAuth
-// @Success 200 {object} map[string]interface{}
-// @Failure 401 {object} ErrorResponse
-// @Router /auth/refresh [post]
 func RefreshTokenHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		universityID, email, name, exists := middleware.GetUserFromContext(c)
@@ -211,33 +207,58 @@ func RefreshTokenHandler(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
 			return
 		}
-
-		// Generate new token
-		token, err := middleware.GenerateToken(universityID, email, name)
+		var university models.University
+		if err := db.Where("id = ?", universityID).First(&university).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "University not found"})
+			return
+		}
+		token, err := middleware.GenerateToken(universityID, email, name, university.TokenVersion)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
 		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"token":   token,
-			"message": "Token refreshed successfully",
-		})
+		c.JSON(http.StatusOK, gin.H{"success": true, "token": token, "message": "Token refreshed successfully"})
 	}
 }
 
-// ChangePasswordHandler changes user password
-// @Summary Change password
-// @Description Change university password
-// @Tags Auth
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param body body ChangePasswordRequest true "Password change request"
-// @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} ErrorResponse
-// @Router /auth/change-password [post]
+func RefreshCompanyTokenHandler(c *gin.Context) {
+	companyID, email, name, exists := middleware.GetCompanyFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		return
+	}
+	var company models.Company
+	if err := database.DB.Where("id = ?", companyID).First(&company).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Company not found"})
+		return
+	}
+	token, err := middleware.GenerateCompanyToken(companyID, email, name, company.TokenVersion)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "token": token, "message": "Token refreshed successfully"})
+}
+
+func RefreshStudentTokenHandler(c *gin.Context) {
+	studentID, email, name, exists := middleware.GetStudentFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		return
+	}
+	var student models.Student
+	if err := database.DB.Where("id = ? AND deleted_at IS NULL", studentID).First(&student).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Student not found"})
+		return
+	}
+	token, err := middleware.GenerateStudentToken(studentID, email, name, student.TokenVersion)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "token": token, "message": "Token refreshed successfully"})
+}
+
 func ChangePasswordHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		universityID, _, _, exists := middleware.GetUserFromContext(c)
@@ -246,60 +267,55 @@ func ChangePasswordHandler(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		var req struct {
-			CurrentPassword string `json:"current_password" binding:"required"`
-			NewPassword     string `json:"new_password" binding:"required,min=8"`
-		}
-
+		var req ChangePasswordRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 
-		// Get university
 		var university models.University
 		if err := db.Where("id = ?", universityID).First(&university).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "University not found"})
 			return
 		}
 
-		// Verify current password
 		if !university.CheckPassword(req.CurrentPassword) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Current password is incorrect"})
 			return
 		}
 
-		// Hash new password
-		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+		hashed, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
 			return
 		}
 
-		// Update password
-		if err := db.Model(&university).Update("password", string(hashedPassword)).Error; err != nil {
+		if err := db.Model(&university).Update("password", string(hashed)).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
 			return
 		}
 
-		log.Printf("✅ Password changed for: %s", university.Email)
-
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "Password changed successfully",
-		})
+		log.Printf("✅ Password changed: %s", university.Email)
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "Password changed successfully"})
 	}
 }
 
-// LogoutHandler handles logout (client-side token removal)
-// @Summary Logout
-// @Description Logout user (client should remove token)
-// @Tags Auth
-// @Produce json
-// @Success 200 {object} map[string]interface{}
-// @Router /auth/logout [post]
-func LogoutHandler() gin.HandlerFunc {
+// auth.go — replace the old LogoutHandler with this
+func LogoutHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if id, _, _, ok := middleware.GetStudentFromContext(c); ok {
+			db.Model(&models.Student{}).Where("id = ?", id).
+				UpdateColumn("token_version", gorm.Expr("token_version + 1"))
+
+		} else if id, _, _, ok := middleware.GetCompanyFromContext(c); ok {
+			db.Model(&models.Company{}).Where("id = ?", id).
+				UpdateColumn("token_version", gorm.Expr("token_version + 1"))
+
+		} else if id, _, _, ok := middleware.GetUserFromContext(c); ok {
+			db.Model(&models.University{}).Where("id = ?", id).
+				UpdateColumn("token_version", gorm.Expr("token_version + 1"))
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": "Logged out successfully. Please remove your token.",
@@ -307,10 +323,14 @@ func LogoutHandler() gin.HandlerFunc {
 	}
 }
 
+// =============================================================================
+// COMPANY AUTH
+// =============================================================================
+
 type CompanyRegisterRequest struct {
-	Name        string `json:"name" binding:"required"`
-	Email       string `json:"email" binding:"required,email"`
-	Password    string `json:"password" binding:"required,min=8"`
+	Name        string `json:"name"         binding:"required"`
+	Email       string `json:"email"        binding:"required,email"`
+	Password    string `json:"password"     binding:"required,min=8"`
 	Industry    string `json:"industry"`
 	CompanySize string `json:"company_size"`
 	Location    string `json:"location"`
@@ -318,16 +338,6 @@ type CompanyRegisterRequest struct {
 	Description string `json:"description"`
 }
 
-// RegisterCompany handles company registration
-// @Summary Register a company
-// @Description Register a new company account for job search
-// @Tags Company
-// @Accept json
-// @Produce json
-// @Param body body CompanyRegisterRequest true "Company registration data"
-// @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{}
-// @Router /company/register [post]
 func RegisterCompany(c *gin.Context) {
 	var req CompanyRegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -335,14 +345,12 @@ func RegisterCompany(c *gin.Context) {
 		return
 	}
 
-	// Check if email already exists
 	var existing models.Company
 	if err := database.DB.Where("email = ?", req.Email).First(&existing).Error; err == nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "Email already registered"})
 		return
 	}
 
-	// Create company
 	company := models.Company{
 		Name:        req.Name,
 		Email:       req.Email,
@@ -353,13 +361,11 @@ func RegisterCompany(c *gin.Context) {
 		Description: req.Description,
 	}
 
-	// Hash password
 	if err := company.HashPassword(req.Password); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
 		return
 	}
 
-	// Save to database
 	if err := database.DB.Create(&company).Error; err != nil {
 		log.Printf("Error creating company: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create company"})
@@ -367,10 +373,11 @@ func RegisterCompany(c *gin.Context) {
 	}
 
 	log.Printf("✅ Company registered: %s (%s)", company.Name, company.Email)
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Company registered successfully",
+	c.JSON(http.StatusCreated, gin.H{
+		"success":  true,
+		"message":  "Company registered successfully",
+		"role":     "company",
+		"redirect": "/login",
 		"company": gin.H{
 			"id":       company.ID,
 			"name":     company.Name,
@@ -380,74 +387,6 @@ func RegisterCompany(c *gin.Context) {
 	})
 }
 
-// LoginCompany handles company login
-// @Summary Company login
-// @Description Login with company email and password
-// @Tags Company
-// @Accept json
-// @Produce json
-// @Param body body LoginRequest true "Login credentials"
-// @Success 200 {object} CompanyLoginResponse
-// @Failure 401 {object} map[string]interface{}
-// @Router /company/login [post]
-func LoginCompany(c *gin.Context) {
-	var req LoginRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	log.Printf("🔐 Company login attempt: %s", req.Email)
-
-	// Find company
-	var company models.Company
-	if err := database.DB.Where("email = ?", req.Email).First(&company).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
-		return
-	}
-
-	// Check password
-	if !company.CheckPassword(req.Password) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
-		return
-	}
-
-	log.Printf("✅ Company login successful: %s", company.Name)
-
-	// Generate JWT token
-	token, err := middleware.GenerateCompanyToken(
-		company.ID.String(),
-		company.Email,
-		company.Name,
-	)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
-		return
-	}
-
-	c.JSON(http.StatusOK, CompanyLoginResponse{
-		Success: true,
-		Message: "Login successful",
-		Token:   token,
-		Company: companyInfo{
-			ID:         company.ID.String(),
-			Name:       company.Name,
-			Email:      company.Email,
-			Industry:   company.Industry,
-			Location:   company.Location,
-			IsVerified: company.IsVerified,
-		},
-	})
-}
-
-// GetCurrentCompany returns current logged-in company
-// @Summary Get current company
-// @Description Get currently logged-in company details
-// @Tags Company
-// @Security BearerAuth
-// @Produce json
-// @Success 200 {object} map[string]interface{}
-// @Router /company/me [get]
 func GetCurrentCompany(c *gin.Context) {
 	companyID, _, _, exists := middleware.GetCompanyFromContext(c)
 	if !exists {
@@ -461,7 +400,6 @@ func GetCurrentCompany(c *gin.Context) {
 		return
 	}
 
-	// Get request statistics
 	var totalRequests, pendingRequests, acceptedRequests int64
 	database.DB.Model(&models.ProfileRequest{}).Where("company_id = ?", companyID).Count(&totalRequests)
 	database.DB.Model(&models.ProfileRequest{}).Where("company_id = ? AND status = ?", companyID, "pending").Count(&pendingRequests)
@@ -482,6 +420,77 @@ func GetCurrentCompany(c *gin.Context) {
 			"total_requests":    totalRequests,
 			"pending_requests":  pendingRequests,
 			"accepted_requests": acceptedRequests,
+		},
+	})
+}
+
+// =============================================================================
+// STUDENT AUTH
+// =============================================================================
+
+type StudentRegisterRequest struct {
+	Email       string `json:"email"        binding:"required,email"`
+	Password    string `json:"password"     binding:"required,min=8"`
+	Name        string `json:"name"         binding:"required"`
+	Phone       string `json:"phone"`
+	Age         *int   `json:"age"`
+	Gender      string `json:"gender"`
+	Nationality string `json:"nationality"`
+	LinkedInURL string `json:"linkedin_url"`
+}
+
+func RegisterStudent(c *gin.Context) {
+	var req StudentRegisterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var existing models.Student
+	if err := database.DB.Where("email = ?", req.Email).First(&existing).Error; err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "Email already registered"})
+		return
+	}
+
+	student := models.Student{
+		Email:           req.Email,
+		Name:            req.Name,
+		Phone:           req.Phone,
+		Age:             req.Age,
+		Gender:          req.Gender,
+		Nationality:     req.Nationality,
+		LinkedInURL:     req.LinkedInURL,
+		IsSearchable:    true,
+		ShowName:        false,
+		ShowEmail:       false,
+		ShowPhone:       false,
+		ShowAge:         false,
+		ShowGender:      false,
+		ShowNationality: false,
+		ShowLinkedIn:    false,
+	}
+
+	if err := student.HashPassword(req.Password); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+		return
+	}
+
+	if err := database.DB.Create(&student).Error; err != nil {
+		log.Printf("Error creating student: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create student account"})
+		return
+	}
+
+	log.Printf("✅ Student registered: %s (%s)", student.Name, student.Email)
+	c.JSON(http.StatusCreated, gin.H{
+		"success":  true,
+		"message":  "Registration successful. You can now log in.",
+		"role":     "student",
+		"redirect": "/login",
+		"student": gin.H{
+			"id":    student.ID,
+			"name":  student.Name,
+			"email": student.Email,
 		},
 	})
 }
